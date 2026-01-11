@@ -23,11 +23,11 @@ const analysisResultSchema = {
         properties: {
           startTime: {
             type: 'number',
-            description: 'シーンの開始時間（秒）',
+            description: 'シーンの開始時間（秒）。onScreenTextsの最初のテキストの時間を秒数に変換した値と一致させること（例："10:21" → 621秒）',
           },
           endTime: {
             type: 'number',
-            description: 'シーンの終了時間（秒）',
+            description: 'シーンの終了時間（秒）。onScreenTextsの最後のテキストの時間を秒数に変換した値と一致させること（例："10:21" → 621秒）',
           },
           scene: {
             type: 'string',
@@ -45,7 +45,7 @@ const analysisResultSchema = {
               properties: {
                 time: {
                   type: 'string',
-                  description: '時刻（00:00形式）',
+                  description: '動画内の実際の時刻（"MM:SS"形式、例："10:21"）。startTimeとendTimeはこの時間を秒数に変換した値と一致させること',
                 },
                 text: {
                   type: 'string',
@@ -160,19 +160,29 @@ export async function POST(request: NextRequest) {
     // 分析プロンプト
     const analysisPrompt = `この動画を分析し、タイムライン形式で各シーンの撮影・演出のポイントを説明してください。
 
-各シーンについて以下の情報を提供してください：
-1. 時間範囲（開始秒数と終了秒数）
-   - startTimeとendTimeは、そのシーン内で画面上に表示されているテキストの時間範囲に基づいて設定してください
-   - onScreenTextsの最初のテキストの時間をstartTimeに、最後のテキストの時間をendTimeに対応させてください
-   - 時間は秒数（number型）で指定してください（例：126秒 = 2分6秒）
-2. シーン名と主な行動
-3. 画面上に表示されているテキスト（時刻、説明など）
-   - timeフィールドは"MM:SS"形式の文字列で、動画内の実際の時刻を表します
-   - 各シーンで表示されているすべてのテキストを収集してください
-4. 撮影・演出の意図やポイント
-5. カテゴリ（導入、ASMR・生活音、関係性、会話、儀式・定型、場面転換、趣味・共感、裏側、日常感、シズル感・肯定、ハプニング、エンディングなど）
+【重要：時間の設定方法】
+各シーンについて、以下の順序で情報を収集してください：
 
-重要：startTimeとendTimeは、onScreenTextsの時間範囲と一致するように設定してください。onScreenTextsの最初のテキストの時間を秒数に変換した値をstartTimeに、最後のテキストの時間を秒数に変換した値をendTimeに設定してください。
+1. まず、画面上に表示されているテキスト（時刻、説明など）をすべて収集してください
+   - timeフィールドは"MM:SS"形式の文字列で、動画内の実際の時刻を表します（例："10:21" = 10分21秒）
+   - 各シーンで表示されているすべてのテキストを時系列順に収集してください
+
+2. 次に、収集したonScreenTextsの時間からstartTimeとendTimeを計算してください
+   - startTime: onScreenTextsの最初のテキストの時間を秒数に変換した値
+   - endTime: onScreenTextsの最後のテキストの時間を秒数に変換した値
+   - 時間の変換方法: "MM:SS"形式を秒数に変換（例："10:21" → 10×60 + 21 = 621秒）
+   - startTimeとendTimeは必ずonScreenTextsの時間範囲と一致させること
+
+3. シーン名と主な行動を記述してください
+
+4. 撮影・演出の意図やポイントを説明してください
+
+5. カテゴリを選択してください（導入、ASMR・生活音、関係性、会話、儀式・定型、場面転換、趣味・共感、裏側、日常感、シズル感・肯定、ハプニング、エンディングなど）
+
+【時間の一致チェック】
+- startTimeは、onScreenTextsの最初のテキストの時間（秒数）と一致していること
+- endTimeは、onScreenTextsの最後のテキストの時間（秒数）と一致していること
+- 例：onScreenTextsが[{"time": "10:21", "text": "お米を炊く"}]の場合、startTime = 621秒、endTime = 621秒
 
 最後に、この動画の特徴的な撮影・編集テクニックを3つまとめてください。`
 
@@ -305,6 +315,7 @@ function parseAnalysisResponse(apiResponse: any, videoId: string): AnalysisResul
       const onScreenTexts = item.onScreenTexts || []
       
       // onScreenTextsの時間からstartTimeとendTimeを補正
+      // onScreenTextsの時間を優先的に使用して、タイムラインの時間と一致させる
       let correctedStartTime = item.startTime
       let correctedEndTime = item.endTime
       
@@ -314,12 +325,21 @@ function parseAnalysisResponse(apiResponse: any, videoId: string): AnalysisResul
         // 最後のテキストの時間を秒数に変換
         const lastTimeSeconds = timeStringToSeconds(onScreenTexts[onScreenTexts.length - 1].time)
         
-        // 有効な時間が取得できた場合、補正を適用
+        // onScreenTextsの時間が有効な場合は、必ずそれを使用する
         if (firstTimeSeconds > 0) {
           correctedStartTime = firstTimeSeconds
         }
-        if (lastTimeSeconds > 0 && lastTimeSeconds >= correctedStartTime) {
-          correctedEndTime = lastTimeSeconds
+        // endTimeは、lastTimeSecondsが有効でstartTime以上の場合に設定
+        // 単一のテキストの場合は、startTimeと同じ値にする
+        if (lastTimeSeconds > 0) {
+          if (onScreenTexts.length === 1) {
+            correctedEndTime = firstTimeSeconds
+          } else if (lastTimeSeconds >= correctedStartTime) {
+            correctedEndTime = lastTimeSeconds
+          } else {
+            // lastTimeSecondsがstartTimeより小さい場合は、startTimeと同じにする
+            correctedEndTime = correctedStartTime
+          }
         }
       }
       

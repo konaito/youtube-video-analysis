@@ -3,8 +3,10 @@ import { AnalysisResult } from '@/lib/types'
 import { extractVideoId, isValidYouTubeUrl } from '@/lib/videoUtils'
 
 /**
- * JSON Schema定義（Structured Outputs用）
+ * JSON Schema定義（OpenRouter Structured Outputs用）
  * AnalysisResult型に基づいたスキーマ
+ * 
+ * 注意: OpenRouterのStructured Outputsでは`additionalProperties`は使用できないため削除
  */
 const analysisResultSchema = {
   type: 'object',
@@ -111,12 +113,12 @@ const analysisResultSchema = {
 }
 
 /**
- * YouTube動画分析API Route
+ * YouTube動画分析API Route（OpenRouter使用）
  * 
- * Gemini APIのStructured Outputs機能を使用してYouTube動画を分析します。
+ * OpenRouter APIのStructured Outputs機能を使用してYouTube動画を分析します。
  * 
- * @see /docs/gemini-video-understanding-capabilities.md
- * @see /docs/gemini-api-direct-integration.md
+ * @see /docs/openrouter-structured-outputs-implementation.md
+ * @see /docs/openrouter-video-analysis-implementation.md
  */
 export async function POST(request: NextRequest) {
   try {
@@ -138,8 +140,8 @@ export async function POST(request: NextRequest) {
     }
 
     // APIキーの確認
-    if (!process.env.GEMINI_API_KEY) {
-      console.error('GEMINI_API_KEY is not set')
+    if (!process.env.OPENROUTER_API_KEY) {
+      console.error('OPENROUTER_API_KEY is not set')
       return NextResponse.json(
         { error: 'API key is not configured' },
         { status: 500 }
@@ -160,47 +162,63 @@ export async function POST(request: NextRequest) {
 
 各シーンについて以下の情報を提供してください：
 1. 時間範囲（開始秒数と終了秒数）
+   - startTimeとendTimeは、そのシーン内で画面上に表示されているテキストの時間範囲に基づいて設定してください
+   - onScreenTextsの最初のテキストの時間をstartTimeに、最後のテキストの時間をendTimeに対応させてください
+   - 時間は秒数（number型）で指定してください（例：126秒 = 2分6秒）
 2. シーン名と主な行動
 3. 画面上に表示されているテキスト（時刻、説明など）
+   - timeフィールドは"MM:SS"形式の文字列で、動画内の実際の時刻を表します
+   - 各シーンで表示されているすべてのテキストを収集してください
 4. 撮影・演出の意図やポイント
 5. カテゴリ（導入、ASMR・生活音、関係性、会話、儀式・定型、場面転換、趣味・共感、裏側、日常感、シズル感・肯定、ハプニング、エンディングなど）
 
+重要：startTimeとendTimeは、onScreenTextsの時間範囲と一致するように設定してください。onScreenTextsの最初のテキストの時間を秒数に変換した値をstartTimeに、最後のテキストの時間を秒数に変換した値をendTimeに設定してください。
+
 最後に、この動画の特徴的な撮影・編集テクニックを3つまとめてください。`
 
-    // Gemini APIを直接呼び出し（Structured Outputsを使用）
-    const model = 'gemini-3-pro-preview'
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`
-    
-    const response = await fetch(apiUrl, {
+    // OpenRouter APIを呼び出し（Structured Outputsを使用）
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
         'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || '',
+        'X-Title': 'YouTube Video Analysis',
       },
       body: JSON.stringify({
-        contents: [
+        model: 'google/gemini-3-pro-preview',
+        messages: [
           {
-            parts: [
+            role: 'user',
+            content: [
               {
-                fileData: {
-                  fileUri: videoUrl,
-                },
+                type: 'text',
+                text: analysisPrompt,
               },
               {
-                text: analysisPrompt,
+                type: 'video_url',
+                video_url: {
+                  url: videoUrl,
+                },
               },
             ],
           },
         ],
-        generationConfig: {
-          responseSchema: analysisResultSchema,
-          responseMimeType: 'application/json',
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'video_analysis',
+            strict: true,
+            schema: analysisResultSchema,
+          },
         },
+        stream: false,
       }),
     })
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
-      console.error('Gemini API Error:', errorData)
+      console.error('OpenRouter API Error:', errorData)
       
       // エラーメッセージをより分かりやすく
       let errorMessage = '動画の分析に失敗しました'
@@ -211,7 +229,12 @@ export async function POST(request: NextRequest) {
       } else if (response.status === 403) {
         errorMessage = 'APIキーの権限が不足しています。設定を確認してください。'
       } else if (response.status === 429) {
-        errorMessage = 'リクエストが多すぎます。しばらく待ってから再度お試しください。'
+        const retryAfter = response.headers.get('Retry-After')
+        if (retryAfter) {
+          errorMessage = `リクエストが多すぎます。${retryAfter}秒後に再度お試しください。`
+        } else {
+          errorMessage = 'リクエストが多すぎます。しばらく待ってから再度お試しください。'
+        }
       } else if (response.status === 400) {
         errorMessage = 'リクエストが無効です。YouTube URLを確認してください。'
       } else if (response.status >= 500) {
@@ -244,13 +267,31 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * Gemini APIのレスポンスをAnalysisResult形式に変換する
+ * 時間文字列（"MM:SS"形式）を秒数に変換する
+ */
+function timeStringToSeconds(timeStr: string): number {
+  try {
+    const parts = timeStr.split(':')
+    if (parts.length === 2) {
+      const minutes = parseInt(parts[0], 10)
+      const seconds = parseInt(parts[1], 10)
+      return minutes * 60 + seconds
+    }
+    return 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * OpenRouter APIのレスポンスをAnalysisResult形式に変換する
  * Structured Outputsを使用しているため、パース処理が簡素化される
  */
 function parseAnalysisResponse(apiResponse: any, videoId: string): AnalysisResult {
   try {
-    // Gemini APIのレスポンス形式
-    const content = apiResponse.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    // OpenRouter APIのレスポンス形式
+    // Structured Outputsを使用している場合、contentはJSON文字列
+    const content = apiResponse.choices?.[0]?.message?.content || ''
     
     if (!content) {
       throw new Error('Empty response content')
@@ -260,18 +301,41 @@ function parseAnalysisResponse(apiResponse: any, videoId: string): AnalysisResul
     const parsed = JSON.parse(content)
 
     // タイムラインを変換（idを追加）
-    const timeline = (parsed.timeline || []).map((item: any, index: number) => ({
-      id: String(index + 1),
-      startTime: item.startTime,
-      endTime: item.endTime,
-      scene: item.scene,
-      icon: item.icon,
-      onScreenTexts: item.onScreenTexts || [],
-      analysis: {
-        intent: item.analysis.intent,
-        category: item.analysis.category,
-      },
-    }))
+    const timeline = (parsed.timeline || []).map((item: any, index: number) => {
+      const onScreenTexts = item.onScreenTexts || []
+      
+      // onScreenTextsの時間からstartTimeとendTimeを補正
+      let correctedStartTime = item.startTime
+      let correctedEndTime = item.endTime
+      
+      if (onScreenTexts.length > 0) {
+        // 最初のテキストの時間を秒数に変換
+        const firstTimeSeconds = timeStringToSeconds(onScreenTexts[0].time)
+        // 最後のテキストの時間を秒数に変換
+        const lastTimeSeconds = timeStringToSeconds(onScreenTexts[onScreenTexts.length - 1].time)
+        
+        // 有効な時間が取得できた場合、補正を適用
+        if (firstTimeSeconds > 0) {
+          correctedStartTime = firstTimeSeconds
+        }
+        if (lastTimeSeconds > 0 && lastTimeSeconds >= correctedStartTime) {
+          correctedEndTime = lastTimeSeconds
+        }
+      }
+      
+      return {
+        id: String(index + 1),
+        startTime: correctedStartTime,
+        endTime: correctedEndTime,
+        scene: item.scene,
+        icon: item.icon,
+        onScreenTexts: onScreenTexts,
+        analysis: {
+          intent: item.analysis.intent,
+          category: item.analysis.category,
+        },
+      }
+    })
 
     // 指南ポイントを変換（idを追加）
     const guidePoints = (parsed.guidePoints || []).map((point: any, index: number) => ({

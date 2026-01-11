@@ -38,8 +38,8 @@ export default function LoadingScreen({ videoId, steps }: LoadingScreenProps) {
         )
         setProgress(10)
 
-        // API呼び出し
-        const response = await fetch('/api/analyze-video', {
+        // API呼び出し（OpenRouter使用）
+        const response = await fetch('/api/analyze-video-openrouter', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

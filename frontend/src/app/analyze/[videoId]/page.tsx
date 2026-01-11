@@ -1,4 +1,5 @@
 import LoadingScreen from '@/components/LoadingScreen'
+import { use } from 'react'
 
 interface AnalyzePageProps {
   params: Promise<{
@@ -6,7 +7,7 @@ interface AnalyzePageProps {
   }>
 }
 
-export default async function AnalyzePage({ params }: AnalyzePageProps) {
-  const { videoId } = await params
+export default function AnalyzePage({ params }: AnalyzePageProps) {
+  const { videoId } = use(params)
   return <LoadingScreen videoId={videoId} />
 }

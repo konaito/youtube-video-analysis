@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "YouTube ダウンローダー",
-  description: "YouTube動画をダウンロードできるアプリ",
+  title: "TubeStudy AI - YouTube動画分析学習プレイヤー",
+  description: "プロの視点で、人気動画を丸裸に。YouTube動画の構成分析と撮影・編集のポイントを学べます。",
 };
 
 export default function RootLayout({
@@ -23,7 +23,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="ja">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >

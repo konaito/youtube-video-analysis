@@ -23,11 +23,11 @@ const analysisResultSchema = {
         properties: {
           startTime: {
             type: 'number',
-            description: 'シーンの開始時間（秒）。onScreenTextsの最初のテキストの時間を秒数に変換した値と一致させること（例："10:21" → 621秒）',
+            description: 'シーンの開始時間（動画の再生時間、秒数）。動画の何秒目からこのシーンが始まるかを示す数値（例：5、10、120など）。⚠️ 動画内に表示されている時刻（"10:21"など）を秒数に変換した値ではありません。動画の再生時間（秒数）です。',
           },
           endTime: {
             type: 'number',
-            description: 'シーンの終了時間（秒）。onScreenTextsの最後のテキストの時間を秒数に変換した値と一致させること（例："10:21" → 621秒）',
+            description: 'シーンの終了時間（動画の再生時間、秒数）。動画の何秒目でこのシーンが終わるかを示す数値（例：10、15、125など）。⚠️ 動画内に表示されている時刻（"10:21"など）を秒数に変換した値ではありません。動画の再生時間（秒数）です。',
           },
           scene: {
             type: 'string',
@@ -45,7 +45,7 @@ const analysisResultSchema = {
               properties: {
                 time: {
                   type: 'string',
-                  description: '動画内の実際の時刻（"MM:SS"形式、例："10:21"）。startTimeとendTimeはこの時間を秒数に変換した値と一致させること',
+                  description: '動画内に表示されている時刻（"MM:SS"形式、例："10:21" = 10時21分という時刻）。⚠️ これは動画の再生時間（秒数）ではありません。動画内で表示されている時刻です。startTime/endTimeとは別物です。',
                 },
                 text: {
                   type: 'string',
@@ -160,18 +160,21 @@ export async function POST(request: NextRequest) {
     // 分析プロンプト
     const analysisPrompt = `この動画を分析し、タイムライン形式で各シーンの撮影・演出のポイントを説明してください。
 
-【重要：時間の設定方法】
+【重要：時間の設定方法 - 動画内の時刻と動画の再生時間を区別すること】
 各シーンについて、以下の順序で情報を収集してください：
 
 1. まず、画面上に表示されているテキスト（時刻、説明など）をすべて収集してください
-   - timeフィールドは"MM:SS"形式の文字列で、動画内の実際の時刻を表します（例："10:21" = 10分21秒）
+   - timeフィールドは"MM:SS"形式の文字列で、動画内に表示されている時刻を表します（例："10:21" = 動画内で表示されている10時21分という時刻）
+   - ⚠️ 重要：これは動画の再生時間（秒数）ではありません。動画内で表示されている時刻です
    - 各シーンで表示されているすべてのテキストを時系列順に収集してください
 
-2. 次に、収集したonScreenTextsの時間からstartTimeとendTimeを計算してください
-   - startTime: onScreenTextsの最初のテキストの時間を秒数に変換した値
-   - endTime: onScreenTextsの最後のテキストの時間を秒数に変換した値
-   - 時間の変換方法: "MM:SS"形式を秒数に変換（例："10:21" → 10×60 + 21 = 621秒）
-   - startTimeとendTimeは必ずonScreenTextsの時間範囲と一致させること
+2. 次に、動画の再生時間（秒数）からstartTimeとendTimeを計算してください
+   - ⚠️ 重要：startTimeとendTimeは動画の再生時間（秒数）であり、動画内に表示されている時刻（"10:21"など）とは全く別物です
+   - startTime: このシーンが動画の何秒目から始まるか（動画の再生時間、秒数）
+   - endTime: このシーンが動画の何秒目で終わるか（動画の再生時間、秒数）
+   - 例：動画の最初から5秒目にシーンが始まり、10秒目に終わる場合、startTime = 5、endTime = 10
+   - ⚠️ 絶対に動画内の時刻（"10:21"など）を秒数に変換してstartTime/endTimeに使わないでください
+   - 動画内の時刻"10:21"は10時21分という時刻であり、621秒という意味ではありません
 
 3. シーン名と主な行動を記述してください
 
@@ -179,10 +182,10 @@ export async function POST(request: NextRequest) {
 
 5. カテゴリを選択してください（導入、ASMR・生活音、関係性、会話、儀式・定型、場面転換、趣味・共感、裏側、日常感、シズル感・肯定、ハプニング、エンディングなど）
 
-【時間の一致チェック】
-- startTimeは、onScreenTextsの最初のテキストの時間（秒数）と一致していること
-- endTimeは、onScreenTextsの最後のテキストの時間（秒数）と一致していること
-- 例：onScreenTextsが[{"time": "10:21", "text": "お米を炊く"}]の場合、startTime = 621秒、endTime = 621秒
+【時間の区別の確認】
+- onScreenTextsのtimeフィールド：動画内に表示されている時刻（"MM:SS"形式の文字列、例："10:21"）
+- startTime/endTime：動画の再生時間（数値の秒数、例：5、10、120など）
+- これらは全く別物です。動画内の時刻を秒数に変換してstartTime/endTimeに使うことは絶対に禁止です
 
 最後に、この動画の特徴的な撮影・編集テクニックを3つまとめてください。`
 
@@ -314,39 +317,15 @@ function parseAnalysisResponse(apiResponse: any, videoId: string): AnalysisResul
     const timeline = (parsed.timeline || []).map((item: any, index: number) => {
       const onScreenTexts = item.onScreenTexts || []
       
-      // onScreenTextsの時間からstartTimeとendTimeを補正
-      // onScreenTextsの時間を優先的に使用して、タイムラインの時間と一致させる
-      let correctedStartTime = item.startTime
-      let correctedEndTime = item.endTime
-      
-      if (onScreenTexts.length > 0) {
-        // 最初のテキストの時間を秒数に変換
-        const firstTimeSeconds = timeStringToSeconds(onScreenTexts[0].time)
-        // 最後のテキストの時間を秒数に変換
-        const lastTimeSeconds = timeStringToSeconds(onScreenTexts[onScreenTexts.length - 1].time)
-        
-        // onScreenTextsの時間が有効な場合は、必ずそれを使用する
-        if (firstTimeSeconds > 0) {
-          correctedStartTime = firstTimeSeconds
-        }
-        // endTimeは、lastTimeSecondsが有効でstartTime以上の場合に設定
-        // 単一のテキストの場合は、startTimeと同じ値にする
-        if (lastTimeSeconds > 0) {
-          if (onScreenTexts.length === 1) {
-            correctedEndTime = firstTimeSeconds
-          } else if (lastTimeSeconds >= correctedStartTime) {
-            correctedEndTime = lastTimeSeconds
-          } else {
-            // lastTimeSecondsがstartTimeより小さい場合は、startTimeと同じにする
-            correctedEndTime = correctedStartTime
-          }
-        }
-      }
+      // ⚠️ 重要：startTimeとendTimeは動画の再生時間（秒数）であり、
+      // onScreenTextsのtimeフィールド（動画内の時刻）とは全く別物です。
+      // onScreenTextsの時間を秒数に変換してstartTime/endTimeに使うことは禁止されています。
+      // AIが正しく動画の再生時間を返すことを期待し、そのまま使用します。
       
       return {
         id: String(index + 1),
-        startTime: correctedStartTime,
-        endTime: correctedEndTime,
+        startTime: item.startTime,
+        endTime: item.endTime,
         scene: item.scene,
         icon: item.icon,
         onScreenTexts: onScreenTexts,

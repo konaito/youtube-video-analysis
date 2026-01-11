@@ -6,7 +6,7 @@ import ReactPlayer from 'react-player'
 interface VideoPlayerProps {
   videoId: string
   onTimeUpdate?: (currentTime: number) => void
-  onSeek?: (time: number) => void
+  onSeek?: number | undefined
 }
 
 export default function VideoPlayer({ videoId, onTimeUpdate, onSeek }: VideoPlayerProps) {
@@ -57,7 +57,7 @@ export default function VideoPlayer({ videoId, onTimeUpdate, onSeek }: VideoPlay
 
   // onSeek propが変更されたときにシーク
   useEffect(() => {
-    if (onSeek !== undefined && onSeek !== null) {
+    if (onSeek !== undefined) {
       handleSeek(onSeek)
     }
   }, [onSeek, handleSeek])
